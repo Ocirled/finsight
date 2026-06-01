@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { logAudit } from "@/lib/audit";
+import { sendVerificationEmail } from "@/lib/email";
 import { randomBytes } from "crypto";
 
 export async function POST(req: NextRequest) {
@@ -32,11 +33,19 @@ export async function POST(req: NextRequest) {
 
   await logAudit(session.user.id, "EMAIL_VERIFICATION_SENT", "auth", req, { email: user.email });
 
-  // In production, send via SMTP — configure SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, EMAIL_FROM
-  // For now, log the URL and return it in dev mode so it can be tested
+  const result = await sendVerificationEmail(user.email, verifyUrl);
+
+  // Dev: tetap kembalikan link agar mudah dites walau email tidak terkirim
   if (process.env.NODE_ENV !== "production") {
     console.log("\n📧 [DEV] Email verification link:", verifyUrl, "\n");
-    return NextResponse.json({ ok: true, devUrl: verifyUrl });
+    return NextResponse.json({ ok: true, devUrl: verifyUrl, emailSent: result.sent });
+  }
+
+  if (!result.sent) {
+    return NextResponse.json(
+      { error: "Gagal mengirim email verifikasi. Coba lagi nanti." },
+      { status: 502 },
+    );
   }
 
   return NextResponse.json({ ok: true });
