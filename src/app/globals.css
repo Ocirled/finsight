@@ -1,0 +1,101 @@
+@import url('https://api.fontshare.com/v2/css?f[]=roobert@400,500,600,700&display=swap');
+@import "tailwindcss";
+
+:root {
+  --background: #faf9f7;
+  --foreground: #000000;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: 'Roobert', Arial, sans-serif;
+  --color-cream: #faf9f7;
+  --color-oat: #dad4c8;
+  --color-oat-light: #eee9df;
+  --color-silver: #9f9b93;
+  --color-charcoal: #55534e;
+  --color-matcha: #078a52;
+  --color-matcha-light: #84e7a5;
+  --color-matcha-dark: #02492a;
+  --color-slushie: #3bd3fd;
+  --color-slushie-dark: #0089ad;
+  --color-lemon: #fbbd41;
+  --color-lemon-light: #f8cc65;
+  --color-lemon-dark: #d08a11;
+  --color-ube: #43089f;
+  --color-ube-light: #c1b0ff;
+  --color-ube-dark: #32037d;
+  --color-pomegranate: #fc7981;
+  --color-blueberry: #01418d;
+}
+
+html { scroll-behavior: smooth; }
+
+body {
+  background: #faf9f7;
+  color: #000000;
+  font-family: 'Roobert', Arial, sans-serif;
+  font-feature-settings: "ss03", "ss10", "ss11", "ss12";
+}
+
+h1, h2, h3, h4 {
+  font-feature-settings: "ss01", "ss03", "ss10", "ss11", "ss12";
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+.bg-grid-pattern {
+  background-image: radial-gradient(circle, #dad4c8 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+.shadow-clay {
+  box-shadow: rgba(0,0,0,0.1) 0px 1px 1px, rgba(0,0,0,0.04) 0px -1px 1px inset, rgba(0,0,0,0.05) 0px -0.5px 1px;
+}
+
+/* Clay button: subtle lift on hover */
+.clay-btn {
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: transform 150ms ease, box-shadow 150ms ease, background-color 150ms ease, opacity 150ms ease;
+}
+
+.clay-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: rgba(0,0,0,0.14) 0px 6px 16px;
+}
+
+/* Responsive show/hide — !important overrides .clay-btn's display */
+.fab-btn { display: flex; }
+@media (min-width: 1024px) {
+  .fab-btn { display: none !important; }
+}
+
+.desktop-btn { display: inline-flex; }
+@media (max-width: 1023px) {
+  .desktop-btn { display: none !important; }
+}
+
+@keyframes fade-in-up {
+  from { opacity: 0; transform: translateY(22px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes fade-in-down {
+  from { opacity: 0; transform: translateY(-10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.animate-fade-in-up   { animation: fade-in-up   0.65s cubic-bezier(0.16, 1, 0.3, 1) both; }
+.animate-fade-in-down { animation: fade-in-down 0.45s cubic-bezier(0.16, 1, 0.3, 1) both; }
+.animate-fade-in      { animation: fade-in      0.5s ease-out both; }
