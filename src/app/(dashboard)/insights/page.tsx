@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { startOfMonth, endOfMonth } from "date-fns";
 import { formatCurrency, formatShortDate } from "@/lib/utils";
 import { DateRangePicker, DateRange, formatDateRange } from "@/components/ui/DateRangePicker";
+import type { Finding } from "@/lib/insights-compute";
 
 // ─── Types ────────────────────────────────────────────────────────
 interface TxDetail { date: string; description: string; amount: number }
@@ -19,7 +20,7 @@ interface InsightsData {
   totalIncome: number; totalExpense: number; net: number;
   savingsRate: number; transactionCount: number;
   categoryBreakdown: CategoryBreakdown[];
-  aiInsight: string | null;
+  findings: Finding[];
   heatmap: HeatmapPoint[];
   topMerchants: MerchantPoint[];
   prevPeriod: {
@@ -522,6 +523,79 @@ function ComparisonView({ curr, prev }: {
   );
 }
 
+// ─── Findings (deterministic signals) ─────────────────────────────
+const SEVERITY_STYLE: Record<Finding["severity"], { color: string; bg: string; border: string }> = {
+  warning: { color: "#c0393f", bg: "rgba(252,121,129,0.07)", border: "rgba(252,121,129,0.25)" },
+  good: { color: "#078a52", bg: "rgba(7,138,82,0.07)", border: "rgba(7,138,82,0.22)" },
+  info: { color: "#43089f", bg: "rgba(67,8,159,0.05)", border: "rgba(67,8,159,0.18)" },
+};
+
+function FindingIcon({ severity }: { severity: Finding["severity"] }) {
+  const { color } = SEVERITY_STYLE[severity];
+  const p = { xmlns: "http://www.w3.org/2000/svg", width: 14, height: 14, viewBox: "0 0 24 24", fill: "none", stroke: color, strokeWidth: 2, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
+  if (severity === "warning") return (
+    <svg {...p}><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+  );
+  if (severity === "good") return (
+    <svg {...p}><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>
+  );
+  return (
+    <svg {...p}><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+  );
+}
+
+function FindingRow({ f }: { f: Finding }) {
+  const s = SEVERITY_STYLE[f.severity];
+  return (
+    <div className="flex gap-3 p-3 rounded-xl" style={{ background: s.bg, border: `1px solid ${s.border}` }}>
+      <div className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0" style={{ background: "#ffffff", border: `1px solid ${s.border}` }}>
+        <FindingIcon severity={f.severity} />
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className="text-sm font-semibold leading-snug" style={{ color: "#000000" }}>{f.title}</p>
+        <p className="text-xs mt-0.5 leading-relaxed" style={{ color: "#55534e" }}>{f.detail}</p>
+      </div>
+      {f.potentialSaving ? (
+        <div className="shrink-0 self-start text-right">
+          <p className="text-[10px] uppercase tracking-wide" style={{ color: "#9f9b93" }}>Potensi</p>
+          <p className="text-xs font-semibold tabular-nums" style={{ color: s.color }}>{formatCurrency(f.potentialSaving)}</p>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function FindingsCard({ findings, loading }: { findings: Finding[]; loading: boolean }) {
+  return (
+    <div style={cardStyle} className="p-5">
+      <div className="flex items-center gap-2 mb-1">
+        <div className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0" style={{ background: "rgba(7,138,82,0.08)" }}>
+          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#078a52" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/>
+          </svg>
+        </div>
+        <h2 className="font-medium" style={{ color: "#000000" }}>Temuan Utama</h2>
+      </div>
+      <p className="text-xs mb-4" style={{ color: "#9f9b93" }}>Sinyal terhitung otomatis — perubahan, risiko, dan peluang yang tidak terlihat dari grafik</p>
+      {loading ? (
+        <div className="grid sm:grid-cols-2 gap-3">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <div key={i} className="h-16 rounded-xl animate-pulse" style={{ background: "#eee9df" }} />
+          ))}
+        </div>
+      ) : findings.length > 0 ? (
+        <div className="grid sm:grid-cols-2 gap-3">
+          {findings.map((f, i) => <FindingRow key={i} f={f} />)}
+        </div>
+      ) : (
+        <p className="text-sm py-6 text-center" style={{ color: "#9f9b93" }}>
+          Belum ada sinyal menonjol untuk periode ini — biasanya karena transaksi masih sedikit.
+        </p>
+      )}
+    </div>
+  );
+}
+
 // ─── Main Page ────────────────────────────────────────────────────
 export default function InsightsPage() {
   const now = new Date();
@@ -531,17 +605,55 @@ export default function InsightsPage() {
   });
   const [data, setData] = useState<InsightsData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [narrative, setNarrative] = useState<string | null>(null);
+  const [narrativeLoading, setNarrativeLoading] = useState(false);
+
+  // AI narrative is fetched separately so findings + numbers render instantly
+  // while the (slower) LLM call streams in afterwards.
+  const fetchNarrative = useCallback(async (d: InsightsData, range: DateRange) => {
+    if (d.transactionCount === 0) { setNarrative(null); return; }
+    setNarrativeLoading(true);
+    try {
+      const res = await fetch("/api/insights/narrative", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          start: toDateParam(range.start),
+          end: toDateParam(range.end),
+          totalIncome: d.totalIncome, totalExpense: d.totalExpense, net: d.net,
+          savingsRate: d.savingsRate, transactionCount: d.transactionCount,
+          categoryBreakdown: d.categoryBreakdown.map(c => ({
+            category: c.category, amount: c.amount, percentage: c.percentage, count: c.count,
+          })),
+          prevPeriod: d.prevPeriod,
+          topMerchants: d.topMerchants.map(m => ({ merchant: m.merchant, amount: m.amount, count: m.count })),
+          findings: d.findings,
+        }),
+      });
+      const j = res.ok ? await res.json() : { insight: null };
+      setNarrative(j.insight ?? null);
+    } catch {
+      setNarrative(null);
+    } finally {
+      setNarrativeLoading(false);
+    }
+  }, []);
 
   const fetchInsights = useCallback(async () => {
     setLoading(true);
     setData(null);
+    setNarrative(null);
     try {
       const res = await fetch(`/api/insights?start=${toDateParam(dateRange.start)}&end=${toDateParam(dateRange.end)}`);
-      if (res.ok) setData(await res.json());
+      if (res.ok) {
+        const json: InsightsData = await res.json();
+        setData(json);
+        fetchNarrative(json, dateRange);
+      }
     } finally {
       setLoading(false);
     }
-  }, [dateRange]);
+  }, [dateRange, fetchNarrative]);
 
   useEffect(() => { fetchInsights(); }, [fetchInsights]);
 
@@ -609,6 +721,9 @@ export default function InsightsPage() {
       {/* Main content */}
       {!empty && (
         <>
+          {/* Findings — instant, deterministic (Fase A) */}
+          <FindingsCard findings={data?.findings ?? []} loading={loading} />
+
           {/* Row 1: Category + AI */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 items-start">
             <div style={cardStyle} className="p-5">
@@ -638,15 +753,15 @@ export default function InsightsPage() {
                 </div>
                 <h2 className="font-medium" style={{ color: "#000000" }}>Analisis AI</h2>
               </div>
-              {loading ? (
+              {loading || narrativeLoading ? (
                 <div className="space-y-2.5 animate-pulse">
                   {Array.from({ length: 8 }).map((_, i) => (
                     <div key={i} className={`h-3 rounded ${i % 3 === 2 ? "w-2/3" : "w-full"}`} style={{ background: "#eee9df" }} />
                   ))}
                 </div>
-              ) : data?.aiInsight ? (
+              ) : narrative ? (
                 <div className="overflow-y-auto pr-1" style={{ maxHeight: "500px" }}>
-                  <MarkdownBlock text={data.aiInsight} />
+                  <MarkdownBlock text={narrative} />
                 </div>
               ) : (
                 <p className="text-sm py-8 text-center" style={{ color: "#9f9b93" }}>Tidak ada insight AI tersedia</p>

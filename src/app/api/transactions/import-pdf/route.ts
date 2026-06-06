@@ -2,18 +2,28 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/db";
-import { extractTransactionsFromPdfText, categorizeTransaction } from "@/lib/ai";
+import { extractTransactionsFromPdfText, type ExtractedTx } from "@/lib/ai";
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const pdfParse: (buf: Buffer) => Promise<{ text: string }> = require("pdf-parse");
+
+// Max transactions saved per import. Categorization now happens inside the
+// single extraction call (no per-row AI), so a bulk insert handles this cheaply.
+const MAX_IMPORT = 150;
 
 function parseDate(val: string): Date {
   if (!val) return new Date();
   const parts = val.split(/[\/\-\.]/).map((p) => p.trim());
+  let d: Date;
   if (parts.length === 3) {
-    if (parts[0].length === 4) return new Date(`${parts[0]}-${parts[1]}-${parts[2]}`);
-    return new Date(`${parts[2]}-${parts[1]}-${parts[0]}`);
+    d = parts[0].length === 4
+      ? new Date(`${parts[0]}-${parts[1]}-${parts[2]}`)
+      : new Date(`${parts[2]}-${parts[1]}-${parts[0]}`);
+  } else {
+    d = new Date(val);
   }
-  return new Date(val);
+  // Guard against malformed dates — one Invalid Date would fail the whole
+  // createMany batch.
+  return isNaN(d.getTime()) ? new Date() : d;
 }
 
 export async function POST(req: NextRequest) {
@@ -54,10 +64,17 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    let extracted: Array<{ tanggal: string; deskripsi: string; jumlah: number; tipe: "INCOME" | "EXPENSE" }>;
+    let extracted: ExtractedTx[];
+    let truncated = false;
     try {
-      extracted = await extractTransactionsFromPdfText(pdfText);
-    } catch {
+      const result = await extractTransactionsFromPdfText(pdfText);
+      extracted = result.transactions.filter((t) => Math.abs(t.jumlah) > 0);
+      truncated = result.truncated;
+    } catch (e) {
+      // Surface the real cause (Groq error, JSON parse, etc.) — the response
+      // message below is intentionally generic, so this log is the only way to
+      // diagnose why extraction failed.
+      console.error("PDF extraction failed:", e);
       return NextResponse.json(
         { error: "AI gagal mengekstrak transaksi. Pastikan PDF adalah mutasi rekening bank." },
         { status: 422 }
@@ -68,35 +85,28 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Tidak ada transaksi yang ditemukan dalam PDF." }, { status: 422 });
     }
 
-    const toImport = extracted.slice(0, 50);
-    const created = [];
+    const toImport = extracted.slice(0, MAX_IMPORT);
 
-    for (const t of toImport) {
-      const description = t.deskripsi || "Transaksi";
-      const amount = Math.abs(t.jumlah) || 0;
-
-      const aiResult = await categorizeTransaction(description, amount);
-
-      const transaction = await prisma.transaction.create({
-        data: {
-          userId: session.user.id,
-          type: t.tipe === "INCOME" ? "INCOME" : "EXPENSE",
-          amount,
-          category: aiResult.category,
-          subcategory: aiResult.subcategory ?? undefined,
-          description,
-          aiCategorized: true,
-          date: parseDate(t.tanggal),
-          ...(bankAccountId && { bankAccountId }),
-        },
-      });
-
-      created.push(transaction);
-    }
+    // Single bulk insert — category/subcategory already came from extraction,
+    // so there are no per-row AI calls and no N+1 round-trips.
+    const result = await prisma.transaction.createMany({
+      data: toImport.map((t) => ({
+        userId: session.user.id,
+        type: t.tipe === "INCOME" ? "INCOME" : "EXPENSE",
+        amount: Math.abs(t.jumlah),
+        category: t.category,
+        subcategory: t.subcategory ?? undefined,
+        description: t.deskripsi || "Transaksi",
+        aiCategorized: true,
+        date: parseDate(t.tanggal),
+        bankAccountId: bankAccountId ?? null,
+      })),
+    });
 
     return NextResponse.json({
-      imported: created.length,
+      imported: result.count,
       total: extracted.length,
+      truncated,
       preview: toImport.slice(0, 5),
     });
   } catch (err) {

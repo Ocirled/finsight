@@ -169,10 +169,15 @@ export default function TransactionsPage() {
       ...(dateRange && { dateFrom: toDateParam(dateRange.start) }),
       ...(dateRange && { dateTo: toDateParam(dateRange.end) }),
     });
-    const res = await fetch(`/api/transactions?${params}`);
-    const data = await res.json();
-    setSummary(data.summary ?? null);
-    setSummaryLoading(false);
+    try {
+      const res = await fetch(`/api/transactions?${params}`);
+      const data = res.ok ? await res.json() : null;
+      setSummary(data?.summary ?? null);
+    } catch {
+      setSummary(null);
+    } finally {
+      setSummaryLoading(false);
+    }
   }, [search, filterCategory, filterAccount, dateRange]);
 
   const fetchTransactions = useCallback(async () => {
@@ -186,11 +191,17 @@ export default function TransactionsPage() {
       ...(dateRange && { dateFrom: toDateParam(dateRange.start) }),
       ...(dateRange && { dateTo: toDateParam(dateRange.end) }),
     });
-    const res = await fetch(`/api/transactions?${params}`);
-    const data = await res.json();
-    setTransactions(data.transactions ?? []);
-    setTotal(data.total ?? 0);
-    setLoading(false);
+    try {
+      const res = await fetch(`/api/transactions?${params}`);
+      const data = res.ok ? await res.json() : null;
+      setTransactions(data?.transactions ?? []);
+      setTotal(data?.total ?? 0);
+    } catch {
+      setTransactions([]);
+      setTotal(0);
+    } finally {
+      setLoading(false);
+    }
   }, [page, search, filterType, filterCategory, filterAccount, dateRange, sortOrder]);
 
   useEffect(() => { fetchSummary(); }, [fetchSummary]);

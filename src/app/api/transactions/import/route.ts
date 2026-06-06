@@ -15,8 +15,6 @@ interface CsvRow {
   debit?: string;
   kredit?: string;
   credit?: string;
-  jumlah?: string;
-  amount?: string;
   tipe?: string;
   type?: string;
   [key: string]: string | undefined;
@@ -67,16 +65,9 @@ export async function POST(req: NextRequest) {
 
       const pengeluaran = parseAmount(row.pengeluaran || row.debit);
       const pemasukan = parseAmount(row.pemasukan || row.kredit || row.credit);
-      const jumlah = parseAmount(row.jumlah || row.amount);
-      const amount = jumlah || pengeluaran || pemasukan;
+      const amount = pengeluaran || pemasukan;
       const type: "INCOME" | "EXPENSE" =
-        pemasukan > 0 && pengeluaran === 0
-          ? "INCOME"
-          : pengeluaran > 0 && pemasukan === 0
-          ? "EXPENSE"
-          : jumlah > 0
-          ? "EXPENSE"
-          : "EXPENSE";
+        pemasukan > 0 && pengeluaran === 0 ? "INCOME" : "EXPENSE";
 
       const aiResult = await categorizeTransaction(description, amount);
 

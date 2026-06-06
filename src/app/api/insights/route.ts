@@ -2,8 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/db";
-import { generateInsight } from "@/lib/ai";
-import { startOfMonth, endOfMonth } from "date-fns";
+import { computeFindings } from "@/lib/insights-compute";
+import { startOfMonth, endOfMonth, subMonths } from "date-fns";
 
 function parseDate(param: string | null, fallback: Date) {
   if (param && /^\d{4}-\d{2}-\d{2}$/.test(param)) {
@@ -39,7 +39,7 @@ export async function GET(req: NextRequest) {
   if (transactions.length === 0) {
     return NextResponse.json({
       totalIncome: 0, totalExpense: 0, net: 0, savingsRate: 0, transactionCount: 0,
-      categoryBreakdown: [], aiInsight: null,
+      categoryBreakdown: [], findings: [],
       heatmap: [], topMerchants: [],
       prevPeriod: null,
     });
@@ -111,13 +111,32 @@ export async function GET(req: NextRequest) {
   const prevStart = new Date(startDate.getTime() - durationMs - 1);
   prevStart.setHours(0, 0, 0, 0);
 
-  const prevTxs = await prisma.transaction.findMany({
-    where: {
-      userId: session.user.id,
-      date: { gte: prevStart, lte: prevEnd },
-    },
-    select: { category: true, amount: true, type: true },
-  });
+  // Lookback window for subscription detection (current period + 3 months back).
+  const recurringStart = startOfMonth(subMonths(startDate, 3));
+
+  // Budget cross-reference only makes sense when the period is exactly one month.
+  const lastDayOfMonth = new Date(startDate.getFullYear(), startDate.getMonth() + 1, 0).getDate();
+  const isFullMonth =
+    startDate.getDate() === 1 &&
+    endDate.getFullYear() === startDate.getFullYear() &&
+    endDate.getMonth() === startDate.getMonth() &&
+    endDate.getDate() === lastDayOfMonth;
+
+  const [prevTxs, recurringTxs, budgetRows] = await Promise.all([
+    prisma.transaction.findMany({
+      where: { userId: session.user.id, date: { gte: prevStart, lte: prevEnd } },
+      select: { category: true, amount: true, type: true },
+    }),
+    prisma.transaction.findMany({
+      where: { userId: session.user.id, type: "EXPENSE", date: { gte: recurringStart, lte: endDate } },
+      select: { merchant: true, description: true, amount: true, date: true },
+    }),
+    isFullMonth
+      ? prisma.budget.findMany({
+          where: { userId: session.user.id, month: startDate.getMonth() + 1, year: startDate.getFullYear() },
+        })
+      : Promise.resolve([]),
+  ]);
 
   const prevIncome = prevTxs.filter(t => t.type === "INCOME").reduce((s, t) => s + Number(t.amount), 0);
   const prevExpense = prevTxs.filter(t => t.type === "EXPENSE").reduce((s, t) => s + Number(t.amount), 0);
@@ -142,16 +161,48 @@ export async function GET(req: NextRequest) {
     categoryBreakdown: prevCategoryBreakdown,
   } : null;
 
-  // ── AI insight ─────────────────────────────────────────────────
-  const aiInsight = await generateInsight(
-    transactions.map(t => ({ category: t.category, amount: Number(t.amount), type: t.type, date: t.date })),
-    startDate, endDate
-  );
+  // ── Deterministic findings (Fase A) ────────────────────────────
+  const expenseTxs = transactions
+    .filter(t => t.type === "EXPENSE")
+    .map(t => ({
+      date: t.date,
+      description: t.description,
+      merchant: t.merchant,
+      amount: Number(t.amount),
+      category: t.category,
+    }));
+
+  const recurringHistory = recurringTxs
+    .map(t => {
+      const wib = new Date(t.date.getTime() + 7 * 3600_000);
+      const monthKey = `${wib.getUTCFullYear()}-${String(wib.getUTCMonth() + 1).padStart(2, "0")}`;
+      return { key: (t.merchant || t.description || "").trim(), monthKey, amount: Number(t.amount) };
+    })
+    .filter(r => r.key.length > 0);
+
+  const spentByCat = new Map(categoryBreakdown.map(c => [c.category, c.amount]));
+  const budgets = budgetRows.map(b => ({
+    category: b.category,
+    limitAmount: Number(b.limitAmount),
+    spent: spentByCat.get(b.category) ?? 0,
+  }));
+
+  const findings = computeFindings({
+    start: startDate, end: endDate, now,
+    totalIncome, totalExpense, net, savingsRate,
+    categoryBreakdown: categoryBreakdown.map(c => ({
+      category: c.category, amount: c.amount, count: c.count, percentage: c.percentage,
+    })),
+    expenseTxs,
+    prevPeriod,
+    recurringHistory,
+    budgets,
+  });
 
   return NextResponse.json({
     totalIncome, totalExpense, net, savingsRate,
     transactionCount: transactions.length,
-    categoryBreakdown, aiInsight,
+    categoryBreakdown, findings,
     heatmap, topMerchants, prevPeriod,
   });
 }

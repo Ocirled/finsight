@@ -198,8 +198,8 @@ export function ImportCsvModal({ onClose, onSuccess }: Props) {
 
                 <div className="rounded-xl p-3 text-xs space-y-1.5" style={{ background: "rgba(67,8,159,0.04)", border: "1px solid rgba(67,8,159,0.15)", color: "#43089f" }}>
                   <p className="font-semibold">Format kolom yang didukung:</p>
-                  <p className="font-mono tracking-tight" style={{ color: "#6b21a8" }}>tanggal · keterangan · pemasukan · pengeluaran · jumlah</p>
-                  <p style={{ color: "#9f9b93" }}>Alias: date · description · kredit · debit · amount</p>
+                  <p className="font-mono tracking-tight" style={{ color: "#6b21a8" }}>tanggal · keterangan · pemasukan · pengeluaran</p>
+                  <p style={{ color: "#9f9b93" }}>Alias: date · description · kredit · debit</p>
                 </div>
               </div>
             )}

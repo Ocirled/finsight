@@ -2,11 +2,12 @@ import Groq from "groq-sdk";
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
-async function askGroq(prompt: string): Promise<string> {
+async function askGroq(prompt: string, temperature = 0.1, maxTokens?: number): Promise<string> {
   const res = await groq.chat.completions.create({
     model: "llama-3.3-70b-versatile",
     messages: [{ role: "user", content: prompt }],
-    temperature: 0.1,
+    temperature,
+    ...(maxTokens ? { max_tokens: maxTokens } : {}),
   });
   return res.choices[0]?.message?.content ?? "";
 }
@@ -49,43 +50,84 @@ function describePeriod(start: Date, end: Date): string {
   return `${Math.round(diffDays / 30)} bulan (${fmt(start)} – ${fmt(end)})`;
 }
 
-export async function generateInsight(
-  transactions: Array<{ category: string; amount: number; type: string; date: Date }>,
-  start: Date,
-  end: Date
-): Promise<string> {
-  const summary = transactions.reduce((acc, t) => {
-    if (t.type === "EXPENSE") acc[t.category] = (acc[t.category] || 0) + t.amount;
-    return acc;
-  }, {} as Record<string, number>);
+export interface InsightContext {
+  start: Date;
+  end: Date;
+  totalIncome: number;
+  totalExpense: number;
+  net: number;
+  savingsRate: number;
+  transactionCount: number;
+  categoryBreakdown: Array<{ category: string; amount: number; percentage: number; count: number }>;
+  prevPeriod: {
+    totalIncome: number;
+    totalExpense: number;
+    net: number;
+    categoryBreakdown: Array<{ category: string; amount: number }>;
+  } | null;
+  topMerchants: Array<{ merchant: string; amount: number; count: number }>;
+  findings: Array<{ title: string; detail: string; severity: string; potentialSaving?: number }>;
+}
 
-  const totalExpense = Object.values(summary).reduce((a, b) => a + b, 0);
-  const totalIncome = transactions
-    .filter((t) => t.type === "INCOME")
-    .reduce((a, t) => a + t.amount, 0);
+const rp = (n: number) => `Rp ${Math.round(n).toLocaleString("id-ID")}`;
 
-  const period = describePeriod(start, end);
-  const txCount = transactions.length;
+export async function generateInsight(ctx: InsightContext): Promise<string> {
+  const period = describePeriod(ctx.start, ctx.end);
 
-  const prompt = `Kamu adalah AI financial advisor untuk aplikasi FinSight. Analisis data keuangan pengguna berikut:
+  const categoryLines = ctx.categoryBreakdown
+    .map((c) => `- ${c.category}: ${rp(c.amount)} (${c.percentage}%, ${c.count}x)`)
+    .join("\n") || "- (tidak ada pengeluaran)";
 
-Periode analisis: ${period}
-Jumlah transaksi: ${txCount}
-Pemasukan total: Rp ${totalIncome.toLocaleString("id-ID")}
-Pengeluaran total: Rp ${totalExpense.toLocaleString("id-ID")}
-Breakdown pengeluaran per kategori: ${JSON.stringify(summary)}
+  const merchantLines = ctx.topMerchants
+    .slice(0, 5)
+    .map((m) => `- ${m.merchant}: ${rp(m.amount)} (${m.count}x)`)
+    .join("\n") || "- (tidak ada)";
 
-Buat insight dalam format markdown yang informatif dan actionable (max 200 kata). Sesuaikan analisis dengan periode di atas (misal: jika hanya 7 hari, jangan bandingkan dengan target bulanan). Gunakan bahasa Indonesia yang friendly. Sertakan:
-- Ringkasan kondisi keuangan untuk periode ini
-- 2-3 pola atau temuan menarik
-- 1-2 saran konkret yang relevan dengan durasi periode`;
+  const prevBlock = ctx.prevPeriod
+    ? `Periode sebelumnya (durasi sama) — Pemasukan ${rp(ctx.prevPeriod.totalIncome)}, Pengeluaran ${rp(ctx.prevPeriod.totalExpense)}, Net ${rp(ctx.prevPeriod.net)}.`
+    : "Tidak ada data periode sebelumnya untuk dibandingkan.";
+
+  const findingLines = ctx.findings.length
+    ? ctx.findings
+        .map(
+          (f) =>
+            `- [${f.severity}] ${f.title} — ${f.detail}${f.potentialSaving ? ` (potensi ${rp(f.potentialSaving)})` : ""}`
+        )
+        .join("\n")
+    : "- (tidak ada sinyal menonjol; data mungkin masih sedikit)";
+
+  const prompt = `Kamu adalah AI financial advisor untuk aplikasi FinSight.
+
+Periode: ${period}
+Pemasukan: ${rp(ctx.totalIncome)} | Pengeluaran: ${rp(ctx.totalExpense)} | ${ctx.net >= 0 ? "Surplus" : "Defisit"}: ${rp(Math.abs(ctx.net))} | Savings rate: ${ctx.savingsRate}%
+Jumlah transaksi: ${ctx.transactionCount}
+
+Pengeluaran per kategori (INI SUDAH DITAMPILKAN ke pengguna sebagai grafik — JANGAN sekadar menyebutkannya ulang):
+${categoryLines}
+
+${prevBlock}
+
+Top merchant:
+${merchantLines}
+
+TEMUAN TERHITUNG SISTEM (fakta akurat — gunakan dan tafsirkan ini, JANGAN menghitung ulang angkanya):
+${findingLines}
+
+TUGAS: Tulis analisis keuangan dalam Bahasa Indonesia yang friendly, format markdown, maksimal 180 kata.
+
+ATURAN WAJIB:
+- DILARANG sekadar mengulang nominal per kategori yang sudah terlihat di grafik — itu tidak memberi nilai tambah.
+- Fokus pada hal yang TIDAK terlihat dari grafik: perubahan vs periode lalu, pola tersembunyi, risiko, dan peluang. Utamakan TEMUAN TERHITUNG di atas.
+- Setiap saran HARUS menyertakan angka rupiah dampak atau potensi hematnya secara konkret.
+- Jika data sedikit, akui keterbatasannya dan beri 1 saran paling relevan — jangan mengarang pola.
+- Jangan gunakan heading '#'. Gunakan **bold** untuk sub-judul dan '- ' untuk poin.
+- Struktur: 1 kalimat ringkas kondisi, lalu "**Yang menonjol**" (2-3 poin), lalu "**Saran**" (1-2 poin actionable dengan angka).`;
 
   try {
-    return await askGroq(prompt);
+    return await askGroq(prompt, 0.5);
   } catch {
     return "Tidak dapat memuat insight AI saat ini. Silakan coba lagi nanti.";
   }
-
 }
 
 export async function suggestBudgets(
@@ -134,10 +176,34 @@ Berikan HANYA JSON ini (tanpa teks lain, gunakan nama kategori persis seperti di
   }
 }
 
-export async function extractTransactionsFromPdfText(pdfText: string): Promise<
-  Array<{ tanggal: string; deskripsi: string; jumlah: number; tipe: "INCOME" | "EXPENSE" }>
-> {
-  const prompt = `Kamu adalah AI ekstraksi data keuangan. Baca teks mutasi rekening bank berikut dan ekstrak semua transaksi.
+// Max characters of extracted PDF text sent to the model. The binding limit is
+// Groq's free-tier rate of 12,000 tokens/minute (counted as prompt + max_tokens),
+// NOT the model's context window. Statement text is very token-dense (~1.9
+// chars/token), so 11k chars ≈ ~5.8k prompt tokens; with ~0.5k boilerplate and
+// the 3.5k output reservation below, a request lands at ~9.8k tokens — safely
+// under 12k. If the text exceeds this, `truncated` is reported so the caller can
+// warn the user instead of silently dropping later transactions.
+export const MAX_PDF_CHARS = 11000;
+
+export interface ExtractedTx {
+  tanggal: string;
+  deskripsi: string;
+  jumlah: number;
+  tipe: "INCOME" | "EXPENSE";
+  category: string;
+  subcategory: string | null;
+}
+
+export async function extractTransactionsFromPdfText(pdfText: string): Promise<{
+  transactions: ExtractedTx[];
+  truncated: boolean;
+}> {
+  const truncated = pdfText.length > MAX_PDF_CHARS;
+  const slice = pdfText.slice(0, MAX_PDF_CHARS);
+
+  // Extraction AND categorization in one call — avoids the old N+1 (one Groq
+  // call per row), so importing 150 rows costs a single request instead of 150.
+  const prompt = `Kamu adalah AI ekstraksi data keuangan. Baca teks mutasi rekening bank berikut, ekstrak SEMUA transaksi, dan kategorikan masing-masing.
 
 Format BCA yang perlu dipahami:
 - Kolom: TANGGAL | KETERANGAN | CBG | MUTASI | SALDO
@@ -147,15 +213,32 @@ Format BCA yang perlu dipahami:
 - Untuk deskripsi: buat keterangan yang mudah dibaca (contoh: "Transfer ke OVO", "Pemasukan dari FRENKY", "Belanja Gramedia")
 - Abaikan: SALDO AWAL, SALDO AKHIR, header tabel, ringkasan MUTASI CR/DB
 
+Kategori — pilih TEPAT satu untuk "category": Makanan & Minuman | Transportasi | Belanja | Hiburan | Kesehatan | Pendidikan | Tagihan & Utilitas | Investasi | Pemasukan | Lainnya
+- Jika tipe = INCOME, "category" harus "Pemasukan".
+- "subcategory" = sub-kategori spesifik singkat (contoh: "Dompet Digital", "Gaji", "Listrik").
+
 Teks mutasi rekening:
-${pdfText.slice(0, 6000)}
+${slice}
 
-Kembalikan HANYA JSON array ini tanpa teks lain:
-[{"tanggal":"dd/mm/yyyy","deskripsi":"...","jumlah":123456,"tipe":"EXPENSE"}]`;
+Kembalikan HANYA JSON array ini tanpa teks lain, tanpa markdown:
+[{"tanggal":"dd/mm/yyyy","deskripsi":"...","jumlah":123456,"tipe":"EXPENSE","category":"...","subcategory":"..."}]`;
 
-  const text = await askGroq(prompt);
-  const json = text.replace(/```json\n?|\n?```/g, "").trim();
+  const text = await askGroq(prompt, 0.1, 3500);
+  // Robust extraction of the JSON array (tolerant of stray prose/fences).
+  const startIdx = text.indexOf("[");
+  const endIdx = text.lastIndexOf("]");
+  const json = startIdx >= 0 && endIdx > startIdx ? text.slice(startIdx, endIdx + 1) : text;
   const parsed = JSON.parse(json);
   if (!Array.isArray(parsed)) throw new Error("not array");
-  return parsed;
+
+  const transactions: ExtractedTx[] = parsed.map((t) => ({
+    tanggal: typeof t?.tanggal === "string" ? t.tanggal : "",
+    deskripsi: typeof t?.deskripsi === "string" && t.deskripsi ? t.deskripsi : "Transaksi",
+    jumlah: Number(t?.jumlah) || 0,
+    tipe: t?.tipe === "INCOME" ? "INCOME" : "EXPENSE",
+    category: typeof t?.category === "string" && t.category ? t.category : "Lainnya",
+    subcategory: typeof t?.subcategory === "string" && t.subcategory ? t.subcategory : null,
+  }));
+
+  return { transactions, truncated };
 }
